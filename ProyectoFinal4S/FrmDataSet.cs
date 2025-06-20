@@ -1,7 +1,18 @@
-﻿using System;
+﻿using LiveCharts.Definitions.Charts;
+using MailKit.Net.Smtp;
+using Microsoft.Data.SqlClient;
+using MimeKit;
+using QuestPDF.Drawing;
+using QuestPDF.Elements;
+using QuestPDF.Fluent;
+using QuestPDF.Helpers;
+using QuestPDF.Infrastructure;
+using ScottPlot;
+using System;
 using System.Collections.Generic;
 using System.ComponentModel;
 using System.Data;
+using System.Diagnostics;
 using System.Drawing;
 using System.Linq;
 using System.Text;
@@ -9,35 +20,27 @@ using System.Text.Json;
 using System.Threading.Tasks;
 using System.Windows.Forms;
 using System.Xml.Linq;
-using System.Diagnostics;
-using LiveCharts.Definitions.Charts;
-using ScottPlot;
-using QuestPDF.Infrastructure;
-using QuestPDF.Fluent;
-using QuestPDF.Helpers;
-using QuestPDF.Infrastructure;
-using QuestPDF.Drawing;
-using QuestPDF.Elements;
-using ScottPlotColors = ScottPlot.Colors;
+using static System.Windows.Forms.VisualStyles.VisualStyleElement;
 using PdfColors = QuestPDF.Helpers.Colors;
+using ScottPlotColors = ScottPlot.Colors;
 
 namespace ProyectoFinal4S
 {
     public partial class FrmDataSet : Form
     {
-        // Lista para guardar todas las filas leídas del CSV quesos
         private List<string[]> allRows = new List<string[]>();
+        string connectionString = @"Server=localhost\SQLEXPRESS;Database=NASA;Trusted_connection=yes; TrustServerCertificate=true";
         public FrmDataSet()
         {
             InitializeComponent();
-            //// Asociar eventos
+            cmbViewOption.Items.Clear();
+            cmbViewOption.Items.AddRange(new string[] { "Table", "Txt plain" });
+            cmbViewOption.SelectedIndex = 0;
+            cmbViewOption.SelectedIndexChanged += cmbViewOption_SelectedIndexChanged;
+            txtPlainText.Visible = false;
             this.Load += Form2_Load;
             btnFilterClass.Click += btnFilterClass_Click;
-            //btnOpen.Click += btnOpen_Click;
-            //btnSave.Click += btnSave_Click;
-            //btnExport.Click += btnExport_Click;
         }
-        // Evento Load: llenar ComboBox con opciones de clase
         private void Form2_Load(object sender, EventArgs e)
         {
             cmbClassFilter.Items.Clear();
@@ -52,9 +55,83 @@ namespace ProyectoFinal4S
             cmbDeleteType.Items.AddRange(new string[] { "Row", "Column" });
             cmbDeleteType.SelectedIndex = 0;
         }
+        private string ConvertToPlainText()
+        {
+            var sb = new StringBuilder();
+
+            // Encabezados
+            var headers = dgvData.Columns.Cast<DataGridViewColumn>().Select(c => c.HeaderText);
+            sb.AppendLine(string.Join("\t", headers));  // Tab para separar columnas
+
+            // Filas
+            foreach (var row in allRows)
+            {
+                sb.AppendLine(string.Join("\t", row));
+            }
+            return sb.ToString();
+        }
+        private void cmbViewOption_SelectedIndexChanged(object sender, EventArgs e)
+        {
+            string option = cmbViewOption.SelectedItem.ToString();
+
+            if (option == "Txt plain")
+            {
+                txtPlainText.Text = ConvertToPlainText();
+                txtPlainText.Visible = true;
+                dgvData.Visible = false;
+            }
+            else if (option == "Table")
+            {
+                txtPlainText.Visible = false;
+                dgvData.Visible = true;
+            }
+        }
+        private void LoadSQLData()
+        {
+            try
+            {
+                using (SqlConnection connection = new SqlConnection(connectionString))
+                {
+                    connection.Open();
+
+                    // Consulta SQL para obtener todos los registros de la tabla dbo.Skyserver
+                    string query = "SELECT * FROM dbo.Skyserver";
+
+                    using (SqlCommand command = new SqlCommand(query, connection))
+                    using (SqlDataReader reader = command.ExecuteReader())
+                    {
+                        dgvData.Rows.Clear();
+                        dgvData.Columns.Clear();
+                        allRows.Clear();  // Limpiar los datos almacenados en memoria
+
+                        // Agregar las columnas al DataGridView
+                        for (int i = 0; i < reader.FieldCount; i++)
+                        {
+                            dgvData.Columns.Add(reader.GetName(i), reader.GetName(i));
+                        }
+
+                        // Cargar las filas en allRows y en el DataGridView
+                        while (reader.Read())
+                        {
+                            var row = new string[reader.FieldCount];  // Crear un array de string[] para cada fila
+                            for (int i = 0; i < reader.FieldCount; i++)
+                            {
+                                row[i] = reader[i].ToString();  // Convertir cada valor a string
+                            }
+
+                            allRows.Add(row);  // Guardar la fila como string[] en allRows
+                            dgvData.Rows.Add(row);  // Mostrar la fila en el DataGridView
+                        }
+                    }
+                }
+            }
+            catch (Exception ex)
+            {
+                MessageBox.Show("Error al cargar los datos desde la base de datos: " + ex.Message);
+            }
+        }
         private void btnOpen_Click(object sender, EventArgs e)
         {
-
             OpenFileDialog openFileDialog = new OpenFileDialog();
             openFileDialog.Filter = "CSV and TXT files (*.csv;*.txt)|*.csv;*.txt";
             openFileDialog.Title = "Open file";
@@ -75,7 +152,6 @@ namespace ProyectoFinal4S
                 if (lines.Length > 0)
                 {
                     char delimiter = ',';
-
                     var headers = lines[0].Split(delimiter);
                     foreach (var header in headers)
                     {
@@ -89,6 +165,7 @@ namespace ProyectoFinal4S
                     }
 
                     DisplayRows(allRows);
+                    LlenarTreeView(allRows);
                     CountData();
                 }
             }
@@ -98,7 +175,7 @@ namespace ProyectoFinal4S
             }
 
         }
-        // Función para mostrar filas en DataGridView
+
         private void DisplayRows(List<string[]> rows)
         {
             dgvData.Rows.Clear();
@@ -107,20 +184,54 @@ namespace ProyectoFinal4S
                 dgvData.Rows.Add(row);
             }
         }
+        private void LlenarTreeView(List<string[]> rows)
+        {
+            treeView.Nodes.Clear(); // Limpiar los nodos existentes
+
+            // Agrupar las filas por "class" (o cualquier otro campo que elijas)
+            var agrupadoPorClase = rows.GroupBy(row => row[ObtenerIndiceColumna("class")]).ToList();
+
+            foreach (var grupoClase in agrupadoPorClase)
+            {
+                // Crear el nodo raíz basado en la clase
+                TreeNode nodoClase = new TreeNode(grupoClase.Key); // "class" (por ejemplo, "QSO", "STAR", "GALAXY")
+                treeView.Nodes.Add(nodoClase);
+
+                // Agrupar por "objid" (ID del objeto)
+                var agrupadoPorObjid = grupoClase
+                    .GroupBy(row => row[ObtenerIndiceColumna("objid")])
+                    .ToList();
+
+                foreach (var grupoObjid in agrupadoPorObjid)
+                {
+                    // Crear un nodo para el "objid"
+                    TreeNode nodoObjid = new TreeNode($"Objid: {grupoObjid.Key}");
+                    nodoClase.Nodes.Add(nodoObjid);
+
+                    // Agregar el RA y DEC bajo el objeto
+                    foreach (var item in grupoObjid)
+                    {
+                        string ra = item[ObtenerIndiceColumna("ra")]; // Right Ascension
+                        string dec = item[ObtenerIndiceColumna("dec")]; // Declination
+                        TreeNode nodoCoordenadas = new TreeNode($"RA: {ra}, DEC: {dec}");
+                        nodoObjid.Nodes.Add(nodoCoordenadas);
+                    }
+                }
+            }
+        }
+        private int ObtenerIndiceColumna(string nombreColumna)
+        {
+            // Asumiendo que los datos provienen de un CSV y tienen encabezados
+            var encabezados = dgvData.Columns.Cast<DataGridViewColumn>().Select(c => c.HeaderText).ToList();
+            return encabezados.IndexOf(nombreColumna);
+        }
         private void btnFilterClass_Click(object sender, EventArgs e)
         {
             string filtroSeleccionado = cmbClassFilter.SelectedItem.ToString();
 
             // Buscar índice de la columna "class"
-            int indexClass = -1;
-            foreach (DataGridViewColumn col in dgvData.Columns)
-            {
-                if (col.HeaderText.Equals("class", StringComparison.OrdinalIgnoreCase))
-                {
-                    indexClass = col.Index;
-                    break;
-                }
-            }
+            int indexClass = dgvData.Columns.Cast<DataGridViewColumn>()
+                .FirstOrDefault(col => col.HeaderText.Equals("class", StringComparison.OrdinalIgnoreCase))?.Index ?? -1;
 
             if (indexClass == -1)
             {
@@ -142,7 +253,6 @@ namespace ProyectoFinal4S
             ).ToList();
 
             DisplayRows(filasFiltradas);
-            CountData();
         }
 
         private void btnExport_Click(object sender, EventArgs e)
@@ -208,43 +318,7 @@ namespace ProyectoFinal4S
             {
                 MessageBox.Show("Error exportando archivo: " + ex.Message);
             }
-
         }
-
-        private void btnSave_Click(object sender, EventArgs e)
-        {
-            SaveFileDialog saveFileDialog = new SaveFileDialog();
-            saveFileDialog.Filter = "CSV files (*.csv)|*.csv|TXT files (*.txt)|*.txt";
-            saveFileDialog.Title = "Save file";
-
-            if (saveFileDialog.ShowDialog() != DialogResult.OK)
-                return;
-
-            string ruta = saveFileDialog.FileName;
-            string ext = Path.GetExtension(ruta).ToLower();
-
-            try
-            {
-                if (ext == ".txt")
-                    GuardarArchivoTXT(ruta);
-                else
-                    GuardarArchivoCSV(ruta);
-
-                MessageBox.Show("Archivo guardado correctamente.");
-
-                // Abrir el archivo guardado automáticamente
-                Process.Start(new ProcessStartInfo()
-                {
-                    FileName = ruta,
-                    UseShellExecute = true
-                });
-            }
-            catch (Exception ex)
-            {
-                MessageBox.Show("Error guardando archivo: " + ex.Message);
-            }
-        }
-
         public void GuardarArchivoCSV(string ruta)
         {
             var lines = new List<string>();
@@ -260,7 +334,6 @@ namespace ProyectoFinal4S
                     lines.Add(string.Join(",", cells));
                 }
             }
-
             File.WriteAllLines(ruta, lines);
         }
         private string EscapeForCsv(string value)
@@ -309,7 +382,6 @@ namespace ProyectoFinal4S
                     listaObjetos.Add(dict);
                 }
             }
-
             var opciones = new JsonSerializerOptions { WriteIndented = true };
             string jsonString = JsonSerializer.Serialize(listaObjetos, opciones);
 
@@ -337,12 +409,47 @@ namespace ProyectoFinal4S
             var doc = new XDocument(root);
             doc.Save(ruta);
         }
+        // Función para enviar correo con archivo adjunto usando MailKit
+        private void EnviarCorreo(string toEmail, string subject, string body, string filePath)
+        {
+            if (!File.Exists(filePath))
+            {
+                MessageBox.Show("El archivo adjunto no existe.");
+                return;
+            }
 
+            var message = new MimeMessage();
+            message.From.Add(new MailboxAddress("Rosalinda", "rosalindacedillo2017@gmail.com"));
+            message.To.Add(MailboxAddress.Parse(toEmail));
+            message.Subject = subject;
+
+            var builder = new BodyBuilder { TextBody = body };
+            builder.Attachments.Add(filePath);
+            message.Body = builder.ToMessageBody();
+
+            try
+            {
+                using (var client = new SmtpClient())
+                {
+                    client.Connect("smtp.gmail.com", 587, MailKit.Security.SecureSocketOptions.StartTls);
+                    client.Authenticate("rosalindacedillo2017@gmail.com", "rqcs laqq upjg rypk");
+
+                    client.Send(message);
+                    client.Disconnect(true);
+                }
+
+                MessageBox.Show("Email sent successfully.");
+            }
+            catch (Exception ex)
+            {
+                MessageBox.Show("Error al enviar el correo: " + ex.Message);
+            }
+        }
         private void btnDelete_Click(object sender, EventArgs e)
         {
             if (dgvData.CurrentCell == null)
             {
-                MessageBox.Show("Selecciona una celda para eliminar la fila o columna correspondiente.");
+                MessageBox.Show("Select a cell to delete the corresponding row or column.");
                 return;
             }
 
@@ -352,7 +459,7 @@ namespace ProyectoFinal4S
             {
                 int rowIndex = dgvData.CurrentCell.RowIndex;
 
-                var confirm = MessageBox.Show($"¿Eliminar fila {rowIndex + 1}?", "Confirmar eliminación", MessageBoxButtons.YesNo);
+                var confirm = MessageBox.Show($"¿Delete fila {rowIndex + 1}?", "Confirm deletion", MessageBoxButtons.YesNo);
                 if (confirm == DialogResult.Yes)
                 {
                     dgvData.Rows.RemoveAt(rowIndex);
@@ -361,12 +468,12 @@ namespace ProyectoFinal4S
                         allRows.RemoveAt(rowIndex);
                 }
             }
-            else if (opcion == "Columna")
+            else if (opcion == "Colum")
             {
                 int colIndex = dgvData.CurrentCell.ColumnIndex;
                 string colName = dgvData.Columns[colIndex].HeaderText;
 
-                var confirm = MessageBox.Show($"¿Eliminar columna '{colName}'?", "Confirmar eliminación", MessageBoxButtons.YesNo);
+                var confirm = MessageBox.Show($"¿Delete column '{colName}'?", "Confirm deletion", MessageBoxButtons.YesNo);
                 if (confirm == DialogResult.Yes)
                 {
                     dgvData.Columns.RemoveAt(colIndex);
@@ -383,6 +490,7 @@ namespace ProyectoFinal4S
             }
         }
 
+
         private void btnClearData_Click(object sender, EventArgs e)
         {
             var confirmResult = MessageBox.Show("¿Seguro que quieres limpiar toda la tabla?",
@@ -397,21 +505,12 @@ namespace ProyectoFinal4S
             }
         }
 
-        private void cmbClassFilter_SelectedIndexChanged(object sender, EventArgs e)
-        {
-
-        }
 
         private void btnGoBack_Click(object sender, EventArgs e)
         {
             FrmMenu menu = new FrmMenu();
             menu.Show();
             this.Hide();
-        }
-
-        private void FrmDataSet_Load(object sender, EventArgs e)
-        {
-
         }
 
         private void btnGraphics_Click(object sender, EventArgs e)
@@ -487,7 +586,7 @@ namespace ProyectoFinal4S
         {
             if (allRows.Count == 0)
             {
-                MessageBox.Show("No hay datos cargados.");
+                MessageBox.Show("There are no data loaded.");
                 return;
             }
 
@@ -531,15 +630,17 @@ namespace ProyectoFinal4S
             }
             catch (Exception ex)
             {
-                MessageBox.Show("Error al graficar estrellas: " + ex.Message);
+                MessageBox.Show("Error in graphing stars: " + ex.Message);
             }
         }
+
+
 
         private void btnExportPDF_Click(object sender, EventArgs e)
         {
             if (dgvData.Rows.Count == 0)
             {
-                MessageBox.Show("No hay datos para exportar.");
+                MessageBox.Show("There is no data to export..");
                 return;
             }
 
@@ -621,7 +722,7 @@ namespace ProyectoFinal4S
 
                 document.GeneratePdf(ruta);
 
-                MessageBox.Show("PDF exportado correctamente.");
+                MessageBox.Show("PDF exported correctly.");
                 Process.Start(new ProcessStartInfo()
                 {
                     FileName = ruta,
@@ -630,9 +731,8 @@ namespace ProyectoFinal4S
             }
             catch (Exception ex)
             {
-                MessageBox.Show("Error exportando a PDF: " + ex.Message);
+                MessageBox.Show("Error exporting to PDF: " + ex.Message);
             }
-
         }
 
         private void btnSearch_Click(object sender, EventArgs e)
@@ -675,16 +775,16 @@ namespace ProyectoFinal4S
 
             if (indexRedshift == -1)
             {
-                MessageBox.Show("No se encontró la columna 'redshift'.");
+                MessageBox.Show("The column 'redshift' was not found.'.");
                 return;
             }
 
             // Ordenar
-            List<string[]> filasOrdenadas;
+            List<string[]> OrdererRow;
 
             if (rbClose.Checked)
             {
-                filasOrdenadas = allRows
+                OrdererRow = allRows
                     .Where(row => row.Length > indexRedshift && double.TryParse(row[indexRedshift], out _))
                     .OrderBy(row => double.Parse(row[indexRedshift]))
                     .ToList();
@@ -693,7 +793,7 @@ namespace ProyectoFinal4S
             }
             else if (rbDistant.Checked)
             {
-                filasOrdenadas = allRows
+                OrdererRow = allRows
                     .Where(row => row.Length > indexRedshift && double.TryParse(row[indexRedshift], out _))
                     .OrderByDescending(row => double.Parse(row[indexRedshift]))
                     .ToList();
@@ -707,9 +807,10 @@ namespace ProyectoFinal4S
             }
 
             // Mostrar resultado en el DataGridView
-            DisplayRows(filasOrdenadas);
+            DisplayRows(OrdererRow);
             CountData();
         }
+
 
 
         private void CountData()
@@ -718,14 +819,180 @@ namespace ProyectoFinal4S
             lblData.Text = $"Data: {total}";
         }
 
-        private void rbClose_CheckedChanged(object sender, EventArgs e)
+        private void btnsqlDate_Click(object sender, EventArgs e)
         {
-
+            LoadSQLData();
         }
 
-        private void groupBox2_Enter(object sender, EventArgs e)
+        private void btnSaveSqlChanges_Click(object sender, EventArgs e)
         {
+            try
+            {
+                // Hacer visible la barra de progreso y configurarla
+                pgb.Visible = true;
+                pgb.Value = 0;
+                pgb.Maximum = dgvData.Rows.Count - 1;  // Establecer el máximo al número de filas del DataGridView
 
+                lblProgress.Text = "Processing..."; // Mostrar el mensaje de progreso
+
+                using (SqlConnection connection = new SqlConnection(connectionString))
+                {
+                    connection.Open();
+
+                    // 1. Verificar si la tabla existe, y si no, crearla
+                    string checkTableQuery = "IF NOT EXISTS (SELECT * FROM sysobjects WHERE name = 'Skyserver_Updated' AND xtype = 'U') " +
+                                             "BEGIN " +
+                                             "CREATE TABLE dbo.Skyserver_Updated (" +
+                                             "objid FLOAT, " +
+                                             "ra FLOAT, " +
+                                             "dec FLOAT, " +
+                                             "u FLOAT, " +
+                                             "g FLOAT, " +
+                                             "r FLOAT, " +
+                                             "i FLOAT, " +
+                                             "z FLOAT, " +
+                                             "run INT, " +
+                                             "rerun INT, " +
+                                             "camcol INT, " +
+                                             "field INT, " +
+                                             "specobjid FLOAT, " +
+                                             "class VARCHAR(50), " +
+                                             "redshift FLOAT, " +
+                                             "plate INT, " +
+                                             "mjd INT, " +
+                                             "fiberid INT " +
+                                             ") " +
+                                             "END";
+
+                    using (SqlCommand command = new SqlCommand(checkTableQuery, connection))
+                    {
+                        command.ExecuteNonQuery();  // Ejecutar la consulta para crear la tabla si no existe
+                    }
+
+                    // 2. Crear la nueva DataTable con los datos modificados
+                    DataTable dataTable = new DataTable();
+                    dataTable.Columns.Add("objid", typeof(double));
+                    dataTable.Columns.Add("ra", typeof(double));
+                    dataTable.Columns.Add("dec", typeof(double));
+                    dataTable.Columns.Add("u", typeof(double));
+                    dataTable.Columns.Add("g", typeof(double));
+                    dataTable.Columns.Add("r", typeof(double));
+                    dataTable.Columns.Add("i", typeof(double));
+                    dataTable.Columns.Add("z", typeof(double));
+                    dataTable.Columns.Add("run", typeof(int));
+                    dataTable.Columns.Add("rerun", typeof(int));
+                    dataTable.Columns.Add("camcol", typeof(int));
+                    dataTable.Columns.Add("field", typeof(int));
+                    dataTable.Columns.Add("specobjid", typeof(double));
+                    dataTable.Columns.Add("class", typeof(string));
+                    dataTable.Columns.Add("redshift", typeof(double)); // Usamos Double para redshift
+                    dataTable.Columns.Add("plate", typeof(int));
+                    dataTable.Columns.Add("mjd", typeof(int));
+                    dataTable.Columns.Add("fiberid", typeof(int));
+
+                    // 3. Recorrer el DataGridView y agregar los datos modificados a la DataTable
+                    foreach (DataGridViewRow row in dgvData.Rows)
+                    {
+                        if (!row.IsNewRow)
+                        {
+                            DataRow dataRow = dataTable.NewRow();
+
+                            // Validar y asignar cada columna numérica
+                            dataRow["objid"] = ValidateConvertDouble(row.Cells["objid"].Value);
+                            dataRow["ra"] = ValidateConvertDouble(row.Cells["ra"].Value);
+                            dataRow["dec"] = ValidateConvertDouble(row.Cells["dec"].Value);
+                            dataRow["u"] = ValidateConvertDouble(row.Cells["u"].Value);
+                            dataRow["g"] = ValidateConvertDouble(row.Cells["g"].Value);
+                            dataRow["r"] = ValidateConvertDouble(row.Cells["r"].Value);
+                            dataRow["i"] = ValidateConvertDouble(row.Cells["i"].Value);
+                            dataRow["z"] = ValidateConvertDouble(row.Cells["z"].Value);
+
+                            // Las columnas que no son numéricas no necesitan validación adicional
+                            dataRow["run"] = row.Cells["run"].Value;
+                            dataRow["rerun"] = row.Cells["rerun"].Value;
+                            dataRow["camcol"] = row.Cells["camcol"].Value;
+                            dataRow["field"] = row.Cells["field"].Value;
+                            dataRow["specobjid"] = ValidateConvertDouble(row.Cells["specobjid"].Value);
+                            dataRow["class"] = row.Cells["class"].Value;
+                            dataRow["redshift"] = ValidateConvertDouble(row.Cells["redshift"].Value);
+                            dataRow["plate"] = row.Cells["plate"].Value;
+                            dataRow["mjd"] = row.Cells["mjd"].Value;
+                            dataRow["fiberid"] = row.Cells["fiberid"].Value;
+
+                            dataTable.Rows.Add(dataRow);
+                        }
+
+                        // Actualizar la barra de progreso y asegurarse de que no se pase del máximo
+                        if (pgb.Value < pgb.Maximum)
+                        {
+                            pgb.Value += 1; // Aumentar el valor
+                        }
+                        else
+                        {
+                            pgb.Value = pgb.Maximum; // Asegurar que no se pase del máximo
+                        }
+                    }
+
+                    // 4. Usar SqlBulkCopy para insertar los datos en la nueva tabla "Skyserver_Updated"
+                    using (SqlBulkCopy bulkCopy = new SqlBulkCopy(connection))
+                    {
+                        bulkCopy.DestinationTableName = "dbo.Skyserver_Updated";  // Nombre de la nueva tabla
+                        bulkCopy.WriteToServer(dataTable);  // Insertar los datos
+                    }
+
+                    // Mensaje de éxito
+                    MessageBox.Show("Loaded correctly.");
+                }
+            }
+            catch (Exception ex)
+            {
+                MessageBox.Show("Error creating the table or inserting the data: " + ex.Message);
+            }
+            finally
+            {
+                // Ocultar la barra de progreso al terminar
+                pgb.Visible = false;
+                lblProgress.Visible = false;
+            }
+        }
+        private double ValidateConvertDouble(object value)
+        {
+            double result;
+            if (value != null && double.TryParse(value.ToString(), out result))
+            {
+                return result;
+            }
+            return 0.0; // Valor predeterminado si no es un número válido
+        }
+
+        private void btnEnviarArchivo_Click(object sender, EventArgs e)
+        {
+            OpenFileDialog openFileDialog = new OpenFileDialog
+            {
+                // Mostrar todos los tipos de archivos que has permitido para exportar
+                Filter = "CSV files (*.csv)|*.csv|TXT files (*.txt)|*.txt|JSON files (*.json)|*.json|XML files (*.xml)|*.xml|PDF files (*.pdf)|*.pdf",
+                Title = "Seleccionar archivo para enviar por correo"
+            };
+
+            if (openFileDialog.ShowDialog() != DialogResult.OK)
+                return;
+
+            string ruta = openFileDialog.FileName;
+
+            if (!File.Exists(ruta))
+            {
+                MessageBox.Show("El archivo seleccionado no existe.");
+                return;
+            }
+
+            try
+            {
+                EnviarCorreo("rosalindacedillo2017@gmail.com", "Archivo Exportado", "Aquí está el archivo exportado.", ruta);
+            }
+            catch (Exception ex)
+            {
+                MessageBox.Show("Error al enviar el correo: " + ex.Message);
+            }
         }
     }
 }

@@ -10,6 +10,8 @@
 
   <ItemGroup>
     <PackageReference Include="LiveCharts.Core" Version="0.9.8" />
+    <PackageReference Include="MailKit" Version="4.12.1" />
+    <PackageReference Include="Microsoft.Data.SqlClient" Version="6.0.2" />
     <PackageReference Include="QuestPDF" Version="2025.5.1" />
     <PackageReference Include="ScottPlot.WinForms" Version="5.0.55" />
   </ItemGroup>
